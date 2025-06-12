@@ -1,1 +1,79 @@
+name: Push Resource Files
 
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'gef-doc/src/main/resources/**'
+
+jobs:
+  push-resources:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout with Submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Prepare Target Content
+        run: |
+          mkdir -p target_content
+          cp -R gef-doc/src/main/resources/* target_content/
+          echo "准备的内容:"
+          ls -lR target_content
+
+      - name: Push to Target Repository
+        uses: actions/github-script@v6
+        env:
+          TARGET_REPO: "https://${{ secrets.TARGET_PAT }}@github.com/guohao-91/gef-docs.git"
+        with:
+          script: |
+            const fs = require('fs').promises;
+            const { execSync } = require('child_process');
+            const path = require('path');
+            
+            // 获取环境变量
+            const workspace = process.env.GITHUB_WORKSPACE;
+            const targetDir = path.join(workspace, 'target_repo');
+            
+            // 1. 清理并克隆目标仓库
+            console.log("清理旧目录...");
+            await fs.rm(targetDir, { recursive: true, force: true }).catch(() => {});
+            
+            console.log("克隆目标仓库...");
+            execSync(`git clone ${{ env.TARGET_REPO }} ${targetDir}`, { stdio: 'inherit' });
+            
+            // 2. 清空目标仓库（保留.git）
+            console.log("清空目标仓库...");
+            execSync(`find ${targetDir} -mindepth 1 ! -name ".git" -exec rm -rf {} +`, { stdio: 'inherit' });
+            
+            // 3. 复制内容到目标仓库
+            console.log("复制资源文件...");
+            const sourceDir = path.join(workspace, 'target_content');
+            execSync(`rsync -a --delete ${sourceDir}/ ${targetDir}/`, { stdio: 'inherit' });
+            
+            // 4. 配置目标仓库Git环境
+            console.log("配置Git环境...");
+            const git = (cmd) => execSync(`git ${cmd}`, { cwd: targetDir, stdio: 'inherit' });
+            
+            git('config user.name "GitHub Actions"');
+            git('config user.email "actions@github.com"');
+            git('remote set-url origin ${{ env.TARGET_REPO }}');
+            
+            // 5. 提交并推送到目标仓库
+            console.log("提交变更...");
+            git('add -A');
+            
+            // 检查是否有变更
+            const status = execSync('git status --porcelain', { cwd: targetDir }).toString();
+            if (!status.trim()) {
+              console.log("没有变更需要提交");
+              return;
+            }
+            
+            git(`commit -m "Update resources from ${process.env.GITHUB_REPOSITORY}@${process.env.GITHUB_SHA.slice(0,7)}"`);
+            
+            console.log("推送到目标仓库...");
+            git('push origin main');
+            console.log("推送完成!");
